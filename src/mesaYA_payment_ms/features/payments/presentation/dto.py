@@ -43,6 +43,14 @@ class PaymentCreateRequest(BaseModel):
             return Decimal(v)
         return Decimal(str(v))
 
+    @field_validator("currency", mode="before")
+    @classmethod
+    def parse_currency(cls, v: Any) -> str:
+        """Parse currency to lowercase."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
     class Config:
         json_schema_extra = {
             "example": {
