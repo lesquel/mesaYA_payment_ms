@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mesaya-payment-ms
+    ports:
+      - "8003:8003"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8003
+      - DEBUG=true
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/mesaya_db
+      - PAYMENT_PROVIDER=mock
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-sk_test_placeholder}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-whsec_placeholder}
+      - MOCK_WEBHOOK_SECRET=whsec_mock_development_secret
+      - FRONTEND_URL=http://localhost:4200
+      - MESA_YA_RES_URL=http://mesa-ya-res:3000
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook
+    depends_on:
+      - postgres
+    networks:
+      - mesaya-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: mesaya-payment-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mesaya_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - mesaya-network
+
+networks:
+  mesaya-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
