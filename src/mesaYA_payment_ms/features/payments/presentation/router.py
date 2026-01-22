@@ -5,6 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mesaYA_payment_ms.features.payments.application.ports import PaymentProviderPort
 from mesaYA_payment_ms.features.payments.application.use_cases import (
@@ -16,6 +17,9 @@ from mesaYA_payment_ms.features.payments.domain.enums import PaymentStatus
 from mesaYA_payment_ms.features.payments.infrastructure.provider_factory import (
     get_payment_provider,
 )
+from mesaYA_payment_ms.features.payments.infrastructure.repository import (
+    PaymentRepository,
+)
 from mesaYA_payment_ms.features.payments.presentation.dto import (
     PaymentCreateRequest,
     PaymentIntentResponse,
@@ -26,16 +30,21 @@ from mesaYA_payment_ms.features.payments.presentation.dto import (
 )
 from mesaYA_payment_ms.shared.presentation.api_response import APIResponse
 from mesaYA_payment_ms.shared.domain.exceptions import PaymentNotFoundError
+from mesaYA_payment_ms.shared.infrastructure.database import get_db_session
 
 router = APIRouter()
-
-# In-memory storage for demo (replace with DB repository)
-_payments_store: dict[UUID, Payment] = {}
 
 
 def get_provider() -> PaymentProviderPort:
     """Dependency for getting the payment provider."""
     return get_payment_provider()
+
+
+async def get_payment_repository(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> PaymentRepository:
+    """Dependency for getting the payment repository."""
+    return PaymentRepository(session)
 
 
 @router.post(
@@ -45,7 +54,7 @@ def get_provider() -> PaymentProviderPort:
     summary="Create a new payment",
     description="""
     Create a new payment/checkout session.
-    
+
     - Supports idempotency via `Idempotency-Key` header
     - Returns a checkout URL for completing the payment
     - Payment starts in PENDING status until webhook confirmation
@@ -54,9 +63,25 @@ def get_provider() -> PaymentProviderPort:
 async def create_payment(
     request: PaymentCreateRequest,
     provider: Annotated[PaymentProviderPort, Depends(get_provider)],
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> APIResponse[PaymentIntentResponse]:
     """Create a new payment."""
+    # Check idempotency key first
+    if idempotency_key:
+        existing = await repo.get_by_idempotency_key(idempotency_key)
+        if existing:
+            return APIResponse.ok(
+                data=PaymentIntentResponse(
+                    payment_id=existing.id,
+                    status=existing.status,
+                    provider=existing.provider,
+                    checkout_url=existing.checkout_url,
+                    client_secret=None,
+                ),
+                message="Payment already exists (idempotent)",
+            )
+
     use_case = CreatePaymentUseCase(provider)
 
     result = await use_case.execute(
@@ -77,14 +102,15 @@ async def create_payment(
         )
     )
 
-    # Store payment (demo - use DB in production)
-    _payments_store[result.payment.id] = result.payment
+    # Persist payment to database
+    persisted_payment = await repo.create(result.payment)
+    print(f"✅ Payment {persisted_payment.id} persisted to database")
 
     return APIResponse.ok(
         data=PaymentIntentResponse(
-            payment_id=result.payment.id,
-            status=result.payment.status,
-            provider=result.payment.provider,
+            payment_id=persisted_payment.id,
+            status=persisted_payment.status,
+            provider=persisted_payment.provider,
             checkout_url=result.checkout_url,
             client_secret=result.client_secret,
         ),
@@ -98,9 +124,12 @@ async def create_payment(
     summary="Get payment by ID",
     description="Retrieve payment details by ID.",
 )
-async def get_payment(payment_id: UUID) -> APIResponse[PaymentResponse]:
+async def get_payment(
+    payment_id: UUID,
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
+) -> APIResponse[PaymentResponse]:
     """Get a payment by ID."""
-    payment = _payments_store.get(payment_id)
+    payment = await repo.get_by_id(payment_id)
     if not payment:
         raise PaymentNotFoundError(str(payment_id))
 
@@ -134,20 +163,22 @@ async def get_payment(payment_id: UUID) -> APIResponse[PaymentResponse]:
     summary="Verify payment status with provider",
     description="""
     Verify the current status of a payment with the provider (Stripe).
-    
+
     Useful for updating status after returning from checkout.
     """,
 )
 async def verify_payment(
     payment_id: UUID,
     provider: Annotated[PaymentProviderPort, Depends(get_provider)],
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
 ) -> APIResponse[PaymentVerifyResponse]:
     """Verify payment status with provider."""
-    payment = _payments_store.get(payment_id)
+    payment = await repo.get_by_id(payment_id)
     if not payment:
         raise PaymentNotFoundError(str(payment_id))
 
     previous_status = payment.status
+    synchronized = False
 
     # Verify with provider
     if payment.provider_payment_id:
@@ -156,14 +187,18 @@ async def verify_payment(
         # Update payment status
         if current_status == PaymentStatus.SUCCEEDED:
             payment.mark_succeeded()
+            synchronized = previous_status != payment.status
         elif current_status == PaymentStatus.FAILED:
             payment.mark_failed()
+            synchronized = previous_status != payment.status
         elif current_status == PaymentStatus.CANCELED:
             payment.mark_canceled()
+            synchronized = previous_status != payment.status
 
-        synchronized = previous_status != payment.status
-    else:
-        synchronized = False
+        # Persist status change to database
+        if synchronized:
+            await repo.update_status(payment.id, payment.status)
+            print(f"✅ Payment {payment.id} status updated to {payment.status.value}")
 
     return APIResponse.ok(
         data=PaymentVerifyResponse(
@@ -185,9 +220,10 @@ async def verify_payment(
 async def cancel_payment(
     payment_id: UUID,
     provider: Annotated[PaymentProviderPort, Depends(get_provider)],
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
 ) -> APIResponse[PaymentCancelResponse]:
     """Cancel a pending payment."""
-    payment = _payments_store.get(payment_id)
+    payment = await repo.get_by_id(payment_id)
     if not payment:
         raise PaymentNotFoundError(str(payment_id))
 
@@ -206,6 +242,10 @@ async def cancel_payment(
         await provider.cancel_payment(payment.provider_payment_id)
 
     payment.mark_canceled()
+
+    # Persist to database
+    await repo.update_status(payment.id, PaymentStatus.CANCELED)
+    print(f"✅ Payment {payment.id} canceled")
 
     return APIResponse.ok(
         data=PaymentCancelResponse(
@@ -226,9 +266,10 @@ async def cancel_payment(
 async def refund_payment(
     payment_id: UUID,
     provider: Annotated[PaymentProviderPort, Depends(get_provider)],
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
 ) -> APIResponse[PaymentRefundResponse]:
     """Refund a completed payment."""
-    payment = _payments_store.get(payment_id)
+    payment = await repo.get_by_id(payment_id)
     if not payment:
         raise PaymentNotFoundError(str(payment_id))
 
@@ -249,6 +290,10 @@ async def refund_payment(
 
         if result.success:
             payment.mark_refunded()
+            # Persist to database
+            await repo.update_status(payment.id, PaymentStatus.REFUNDED)
+            print(f"✅ Payment {payment.id} refunded")
+
             return APIResponse.ok(
                 data=PaymentRefundResponse(
                     payment_id=payment.id,
@@ -280,9 +325,12 @@ async def refund_payment(
 )
 async def get_reservation_payments(
     reservation_id: UUID,
+    repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
 ) -> APIResponse[list[PaymentResponse]]:
     """Get payments for a reservation."""
-    payments = [
+    payments = await repo.get_by_reservation_id(reservation_id)
+
+    payment_responses = [
         PaymentResponse(
             id=p.id,
             amount=str(p.amount),
@@ -303,8 +351,7 @@ async def get_reservation_payments(
             created_at=p.created_at,
             updated_at=p.updated_at,
         )
-        for p in _payments_store.values()
-        if p.reservation_id == reservation_id
+        for p in payments
     ]
 
-    return APIResponse.ok(data=payments)
+    return APIResponse.ok(data=payment_responses)

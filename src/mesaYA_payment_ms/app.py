@@ -7,10 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mesaYA_payment_ms.shared.core.settings import get_settings
-from mesaYA_payment_ms.shared.presentation.exception_handlers import register_exception_handlers
-from mesaYA_payment_ms.features.payments.presentation.router import router as payments_router
-from mesaYA_payment_ms.features.webhooks.presentation.router import router as webhooks_router
-from mesaYA_payment_ms.features.partners.presentation.router import router as partners_router
+from mesaYA_payment_ms.shared.presentation.exception_handlers import (
+    register_exception_handlers,
+)
+from mesaYA_payment_ms.shared.infrastructure.database import init_db, close_db
+from mesaYA_payment_ms.features.payments.presentation.router import (
+    router as payments_router,
+)
+from mesaYA_payment_ms.features.webhooks.presentation.router import (
+    router as webhooks_router,
+)
+from mesaYA_payment_ms.features.partners.presentation.router import (
+    router as partners_router,
+)
 
 
 @asynccontextmanager
@@ -21,8 +30,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     print(f"🚀 Payment Microservice starting on {settings.host}:{settings.port}")
     print(f"📝 Environment: {settings.environment}")
     print(f"💳 Payment Provider: {settings.payment_provider}")
+
+    # Initialize database connection
+    await init_db()
+
     yield
+
     # Shutdown
+    await close_db()
     print("👋 Payment Microservice shutting down")
 
 
