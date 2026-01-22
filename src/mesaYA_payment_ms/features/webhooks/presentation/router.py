@@ -195,22 +195,29 @@ async def notify_n8n(event_type: str, data: dict[str, Any]) -> bool:
     # Use /webhook/ for production (workflow must be ACTIVE)
     webhook_url = f"{settings.n8n_webhook_url}-test/payment-webhook"
 
+    # Ensure required fields have valid values (n8n validates for non-empty)
+    payment_id = (
+        data.get("payment_id") or f"pay_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    )
+    status_raw = data.get("status", "pending")
+    status = "approved" if status_raw == "succeeded" else (status_raw or "pending")
+    amount = data.get("amount") or 0
+    currency = data.get("currency") or "USD"
+
     payload = {
         "event": event_type,
-        "payment_id": data.get("payment_id", ""),
-        "status": (
-            "approved" if data.get("status") == "succeeded" else data.get("status", "")
-        ),
-        "amount": data.get("amount", 0),
-        "currency": data.get("currency", "USD"),
+        "payment_id": payment_id,
+        "status": status,
+        "amount": amount,
+        "currency": currency,
         "metadata": {
-            "reservation_id": data.get("reservation_id", ""),
-            "service_type": data.get("service_type", "reservation"),
-            "customer_email": data.get("customer_email", ""),
-            "customer_name": data.get("customer_name", ""),
+            "reservation_id": data.get("reservation_id") or "unknown",
+            "service_type": data.get("service_type") or "reservation",
+            "customer_email": data.get("customer_email") or "",
+            "customer_name": data.get("customer_name") or "",
         },
         "source": "mesaYA_payment_ms",
-        "provider": data.get("provider", "mock"),
+        "provider": data.get("provider") or "mock",
     }
 
     try:
