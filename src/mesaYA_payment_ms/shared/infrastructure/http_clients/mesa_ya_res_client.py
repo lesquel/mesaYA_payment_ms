@@ -46,7 +46,10 @@ class MesaYaResClient:
         Returns:
             List of partners subscribed to the event
         """
+        # mesaYA_Res partners endpoint is versioned at /api/v1/partners
         url = f"{self._base_url}/api/v1/partners"
+
+        print(f"🔍 Fetching partners from {url} for event: {event_type}")
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -56,26 +59,41 @@ class MesaYaResClient:
                     headers={"Content-Type": "application/json"},
                 )
 
+                print(f"📡 Partners API response status: {response.status_code}")
+
                 if response.status_code == 200:
                     data = response.json()
+                    print(f"📦 Partners API raw response: {data}")
+
                     partners_data = (
                         data.get("data", data) if isinstance(data, dict) else data
                     )
 
                     if isinstance(partners_data, list):
-                        return [
+                        partners = [
                             PartnerInfo(
                                 id=p.get("id", ""),
                                 name=p.get("name", ""),
                                 webhook_url=p.get("webhookUrl", ""),
                                 secret=p.get("secret", ""),
-                                subscribed_events=p.get("subscribedEvents", []),
+                                # Field is "events" in API response, not "subscribedEvents"
+                                subscribed_events=p.get(
+                                    "events", p.get("subscribedEvents", [])
+                                ),
                                 status=p.get("status", "active"),
                                 contact_email=p.get("contactEmail"),
                                 description=p.get("description"),
                             )
                             for p in partners_data
                         ]
+                        print(
+                            f"✅ Found {len(partners)} partners for event {event_type}"
+                        )
+                        for p in partners:
+                            print(
+                                f"   - {p.name}: {p.webhook_url} (events: {p.subscribed_events})"
+                            )
+                        return partners
 
                     print(f"⚠️ Unexpected response format from mesaYA_Res: {data}")
                     return []
@@ -122,7 +140,10 @@ class MesaYaResClient:
                                 name=p.get("name", ""),
                                 webhook_url=p.get("webhookUrl", ""),
                                 secret=p.get("secret", ""),
-                                subscribed_events=p.get("subscribedEvents", []),
+                                # Field is "events" in API response, not "subscribedEvents"
+                                subscribed_events=p.get(
+                                    "events", p.get("subscribedEvents", [])
+                                ),
                                 status=p.get("status", "active"),
                                 contact_email=p.get("contactEmail"),
                                 description=p.get("description"),

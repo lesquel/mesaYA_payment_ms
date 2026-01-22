@@ -73,12 +73,16 @@ class PaymentModel(Base):
     )
 
     # Status - matches TypeORM entity (payment_status column with enum)
-    # Note: The enum is created by TypeORM, we use create_type=False to avoid conflicts
+    # Uses PostgreSQL enum type created by TypeORM
     payment_status = Column(
         "payment_status",
-        String(50),  # Use String to be compatible with existing enum or varchar
+        SQLEnum(
+            PaymentStatus,
+            name="payments_payment_status_enum",
+            create_type=False,  # Don't create, use existing PostgreSQL enum
+        ),
         nullable=False,
-        default=PaymentStatus.PENDING.value,
+        default=PaymentStatus.PENDING,
     )
 
     # Timestamps - matches TypeORM entity
@@ -150,7 +154,8 @@ class PaymentModel(Base):
         nullable=True,
     )
 
-    metadata = Column(
+    payment_metadata = Column(
+        "metadata",
         JSONB,
         nullable=True,
         default=dict,
@@ -209,7 +214,7 @@ class PaymentModel(Base):
             payer_email=self.payer_email,
             payer_name=self.payer_name,
             description=self.description,
-            metadata=self.metadata or {},
+            metadata=self.payment_metadata or {},
             idempotency_key=self.idempotency_key,
             failure_reason=self.failure_reason,
             created_at=self.created_at or datetime.utcnow(),
@@ -249,7 +254,7 @@ class PaymentModel(Base):
             payer_email=payment.payer_email,
             payer_name=payment.payer_name,
             description=payment.description,
-            metadata=payment.metadata,
+            payment_metadata=payment.metadata,
             idempotency_key=payment.idempotency_key,
             failure_reason=payment.failure_reason,
             created_at=payment.created_at,

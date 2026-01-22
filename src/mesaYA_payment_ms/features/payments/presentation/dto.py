@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 from mesaYA_payment_ms.features.payments.domain.enums import (
     PaymentStatus,
@@ -17,23 +17,58 @@ from mesaYA_payment_ms.features.payments.domain.enums import (
 class PaymentCreateRequest(BaseModel):
     """Request to create a new payment."""
 
+    # Allow both camelCase (reservationId) and snake_case (reservation_id)
+    model_config = ConfigDict(
+        populate_by_name=True,
+        json_schema_extra={
+            "example": {
+                "amount": "25.00",
+                "currency": "usd",
+                "paymentType": "reservation",
+                "reservationId": "123e4567-e89b-12d3-a456-426614174000",
+                "userId": "c6d3441a-6d6b-401f-a1fb-1bb6b8d13db5",
+                "payerEmail": "john@example.com",
+                "payerName": "John Doe",
+                "description": "Reservation deposit for 2 guests",
+            }
+        },
+    )
+
     amount: Decimal = Field(..., gt=0, description="Payment amount")
     currency: Currency = Field(default=Currency.USD, description="Currency code")
     payment_type: PaymentType = Field(
-        default=PaymentType.RESERVATION, description="Type of payment"
+        default=PaymentType.RESERVATION,
+        alias="paymentType",
+        description="Type of payment",
     )
 
-    reservation_id: UUID | None = Field(None, description="Related reservation ID")
-    subscription_id: UUID | None = Field(None, description="Related subscription ID")
-    user_id: UUID | None = Field(None, description="User making the payment")
+    reservation_id: UUID | None = Field(
+        None, alias="reservationId", description="Related reservation ID"
+    )
+    subscription_id: UUID | None = Field(
+        None, alias="subscriptionId", description="Related subscription ID"
+    )
+    user_id: UUID | None = Field(
+        None, alias="userId", description="User making the payment"
+    )
 
-    payer_email: str | None = Field(None, description="Payer email address")
-    payer_name: str | None = Field(None, description="Payer full name")
-    description: str | None = Field(None, max_length=500, description="Payment description")
+    payer_email: str | None = Field(
+        None, alias="payerEmail", description="Payer email address"
+    )
+    payer_name: str | None = Field(
+        None, alias="payerName", description="Payer full name"
+    )
+    description: str | None = Field(
+        None, max_length=500, description="Payment description"
+    )
     metadata: dict[str, Any] | None = Field(None, description="Additional metadata")
 
-    success_url: str | None = Field(None, description="Redirect URL on success")
-    cancel_url: str | None = Field(None, description="Redirect URL on cancel")
+    success_url: str | None = Field(
+        None, alias="successUrl", description="Redirect URL on success"
+    )
+    cancel_url: str | None = Field(
+        None, alias="cancelUrl", description="Redirect URL on cancel"
+    )
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -50,19 +85,6 @@ class PaymentCreateRequest(BaseModel):
         if isinstance(v, str):
             return v.lower()
         return v
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "amount": "25.00",
-                "currency": "usd",
-                "payment_type": "reservation",
-                "reservation_id": "123e4567-e89b-12d3-a456-426614174000",
-                "payer_email": "john@example.com",
-                "payer_name": "John Doe",
-                "description": "Reservation deposit for 2 guests",
-            }
-        }
 
 
 class PaymentIntentResponse(BaseModel):

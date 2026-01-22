@@ -1,10 +1,11 @@
 """Payment API router."""
 
+import asyncio
 from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mesaYA_payment_ms.features.payments.application.ports import PaymentProviderPort
@@ -31,6 +32,8 @@ from mesaYA_payment_ms.features.payments.presentation.dto import (
 from mesaYA_payment_ms.shared.presentation.api_response import APIResponse
 from mesaYA_payment_ms.shared.domain.exceptions import PaymentNotFoundError
 from mesaYA_payment_ms.shared.infrastructure.database import get_db_session
+from mesaYA_payment_ms.features.partners.domain.entities import WebhookEventType
+from mesaYA_payment_ms.shared.infrastructure.http_clients import get_mesa_ya_res_client
 
 router = APIRouter()
 
@@ -45,6 +48,54 @@ async def get_payment_repository(
 ) -> PaymentRepository:
     """Dependency for getting the payment repository."""
     return PaymentRepository(session)
+
+
+async def send_payment_webhook(payment: Payment, event_type: WebhookEventType) -> None:
+    """
+    Send webhook notifications for a payment event.
+
+    This is called after payment creation/update to notify partners.
+    """
+    from mesaYA_payment_ms.features.webhooks.presentation.router import (
+        send_partner_webhooks,
+    )
+
+    print(f"🔔 Preparing to send {event_type.value} webhook for payment {payment.id}")
+
+    # Build webhook payload
+    webhook_payload = {
+        "payment_id": str(payment.id),
+        "amount": str(payment.amount),
+        "currency": (
+            payment.currency.value
+            if hasattr(payment.currency, "value")
+            else str(payment.currency)
+        ),
+        "status": (
+            payment.status.value
+            if hasattr(payment.status, "value")
+            else str(payment.status)
+        ),
+        "reservation_id": (
+            str(payment.reservation_id) if payment.reservation_id else None
+        ),
+        "user_id": str(payment.user_id) if payment.user_id else None,
+        "provider": payment.provider,
+        "checkout_url": payment.checkout_url,
+        "description": payment.description,
+        "metadata": payment.metadata,
+    }
+
+    print(f"📦 Webhook payload: {webhook_payload}")
+
+    try:
+        results = await send_partner_webhooks(event_type, webhook_payload)
+        print(f"📤 Webhook results: {results}")
+
+        if not results:
+            print(f"⚠️ No webhooks sent - no partners subscribed to {event_type.value}")
+    except Exception as e:
+        print(f"❌ Error sending webhooks: {e}")
 
 
 @router.post(
@@ -105,6 +156,14 @@ async def create_payment(
     # Persist payment to database
     persisted_payment = await repo.create(result.payment)
     print(f"✅ Payment {persisted_payment.id} persisted to database")
+
+    # Send webhook notification for payment created (in background)
+    print(f"🔔 Triggering payment.created webhook for payment {persisted_payment.id}")
+    try:
+        await send_payment_webhook(persisted_payment, WebhookEventType.PAYMENT_CREATED)
+    except Exception as e:
+        # Don't fail the request if webhook fails
+        print(f"⚠️ Failed to send payment.created webhook: {e}")
 
     return APIResponse.ok(
         data=PaymentIntentResponse(

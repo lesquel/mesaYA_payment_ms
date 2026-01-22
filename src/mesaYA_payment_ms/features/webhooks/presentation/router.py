@@ -51,7 +51,7 @@ def get_provider() -> PaymentProviderPort:
 
 
 async def get_payment_repository(
-    session: Annotated[AsyncSession, Depends(get_db_session)]
+    session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> PaymentRepository:
     """Dependency for getting the payment repository."""
     return PaymentRepository(session)
@@ -62,7 +62,7 @@ async def send_partner_webhooks(
 ) -> list[dict[str, Any]]:
     """
     Send webhooks to all registered partners subscribed to the event.
-    
+
     Fetches partners from mesaYA_Res API (partners are managed there).
 
     Args:
@@ -72,21 +72,31 @@ async def send_partner_webhooks(
     Returns:
         List of webhook results with partner info and status
     """
+    print(f"🚀 send_partner_webhooks called for event: {event_type.value}")
+    print(f"📦 Payload: {payload}")
+
     # Fetch partners from mesaYA_Res API
     client = get_mesa_ya_res_client()
+    print(f"🔌 Fetching partners from mesaYA_Res...")
     partners = await client.get_partners_for_event(event_type.value)
-    
+
+    print(f"📋 Partners fetched: {len(partners)}")
+
     if not partners:
         print(f"📭 No partners subscribed to {event_type.value}")
         return []
-    
+
     results = []
-    
+
     for partner in partners:
+        print(f"🔄 Processing partner: {partner.name} ({partner.id})")
+
         # Skip if partner has no webhook URL
         if not partner.webhook_url:
             print(f"⏭️ Skipping partner {partner.name}: no webhook URL")
             continue
+
+        print(f"🎯 Sending webhook to {partner.name}: {partner.webhook_url}")
 
         # Build payload with event info
         webhook_payload = {
@@ -230,8 +240,10 @@ async def notify_n8n(event_type: str, data: dict[str, Any]) -> bool:
 # Webhook Notification Endpoint (called by mesaYA_Res gateway)
 # ============================================================================
 
+
 class WebhookNotifyRequest(BaseModel):
     """Request to notify partners about a payment event."""
+
     payment_id: str
     event_type: str  # e.g., "payment.succeeded", "payment.failed"
     metadata: dict[str, Any] | None = None
@@ -242,7 +254,7 @@ class WebhookNotifyRequest(BaseModel):
     summary="Notify partners about payment event",
     description="""
     Endpoint called by mesaYA_Res gateway to trigger webhooks to partners.
-    
+
     Loads the payment from database and sends webhooks to all subscribed partners.
     Also notifies n8n for orchestration workflows.
     """,
@@ -257,21 +269,21 @@ async def notify_payment_event(
         payment_id = UUID(request.payment_id)
     except ValueError:
         return APIResponse.error(f"Invalid payment_id format: {request.payment_id}")
-    
+
     # Load payment from database
     payment = await repo.get_by_id(payment_id)
     if not payment:
         return APIResponse.error(f"Payment not found: {request.payment_id}")
-    
+
     print(f"📤 Notifying partners about {request.event_type} for payment {payment_id}")
-    
+
     # Map event type string to enum
     try:
         event_type = WebhookEventType(request.event_type)
     except ValueError:
         # Default to PAYMENT_SUCCEEDED for backwards compatibility
         event_type = WebhookEventType.PAYMENT_SUCCEEDED
-    
+
     # Prepare webhook payload
     webhook_payload = {
         "payment_id": str(payment.id),
@@ -279,18 +291,22 @@ async def notify_payment_event(
         "amount": float(payment.amount),
         "currency": payment.currency.value,
         "provider": payment.provider,
-        "reservation_id": str(payment.reservation_id) if payment.reservation_id else None,
-        "subscription_id": str(payment.subscription_id) if payment.subscription_id else None,
+        "reservation_id": (
+            str(payment.reservation_id) if payment.reservation_id else None
+        ),
+        "subscription_id": (
+            str(payment.subscription_id) if payment.subscription_id else None
+        ),
         "user_id": str(payment.user_id) if payment.user_id else None,
         "customer_email": payment.payer_email,
         "customer_name": payment.payer_name,
         "notified_at": datetime.utcnow().isoformat(),
         **(request.metadata or {}),
     }
-    
+
     # Send webhooks to partners
     partner_results = await send_partner_webhooks(event_type, webhook_payload)
-    
+
     # Notify n8n
     n8n_notified = await notify_n8n(
         request.event_type,
@@ -299,13 +315,15 @@ async def notify_payment_event(
             "status": payment.status.value,
             "amount": float(payment.amount),
             "currency": payment.currency.value,
-            "reservation_id": str(payment.reservation_id) if payment.reservation_id else "",
+            "reservation_id": (
+                str(payment.reservation_id) if payment.reservation_id else ""
+            ),
             "customer_email": payment.payer_email or "",
             "customer_name": payment.payer_name or "",
             "provider": payment.provider,
         },
     )
-    
+
     return APIResponse.ok(
         data={
             "payment_id": str(payment.id),
@@ -321,6 +339,7 @@ async def notify_payment_event(
 # ============================================================================
 # Provider Webhook Endpoints
 # ============================================================================
+
 
 @router.post(
     "/stripe",
@@ -360,17 +379,17 @@ async def stripe_webhook(
             # Payment succeeded
             session_id = data.get("id")
             payment_id_str = data.get("metadata", {}).get("payment_id")
-            
+
             if payment_id_str:
                 try:
                     payment_id = UUID(payment_id_str)
                     payment = await repo.get_by_id(payment_id)
-                    
+
                     if payment:
                         # Update status in database
                         await repo.update_status(payment_id, PaymentStatus.SUCCEEDED)
                         print(f"✅ Payment {payment_id} marked as SUCCEEDED")
-                        
+
                         # Send webhooks to partners
                         webhook_payload = {
                             "payment_id": str(payment.id),
@@ -379,9 +398,15 @@ async def stripe_webhook(
                             "currency": payment.currency.value,
                             "provider": "stripe",
                             "session_id": session_id,
-                            "reservation_id": str(payment.reservation_id) if payment.reservation_id else None,
+                            "reservation_id": (
+                                str(payment.reservation_id)
+                                if payment.reservation_id
+                                else None
+                            ),
                         }
-                        await send_partner_webhooks(WebhookEventType.PAYMENT_SUCCEEDED, webhook_payload)
+                        await send_partner_webhooks(
+                            WebhookEventType.PAYMENT_SUCCEEDED, webhook_payload
+                        )
                         await notify_n8n("payment.succeeded", webhook_payload)
                 except ValueError:
                     print(f"⚠️ Invalid payment_id in Stripe metadata: {payment_id_str}")
@@ -389,7 +414,7 @@ async def stripe_webhook(
         elif event_type == "checkout.session.expired":
             # Payment expired/canceled
             payment_id_str = data.get("metadata", {}).get("payment_id")
-            
+
             if payment_id_str:
                 try:
                     payment_id = UUID(payment_id_str)
@@ -444,16 +469,16 @@ async def mock_webhook(
 
         # Handle event and notify n8n
         n8n_notified = False
-        
+
         if payment_id_str:
             try:
                 payment_id = UUID(payment_id_str)
                 payment = await repo.get_by_id(payment_id)
-                
+
                 if event_type == "payment.succeeded" and payment:
                     await repo.update_status(payment_id, PaymentStatus.SUCCEEDED)
                     print(f"✅ Mock payment {payment_id} marked as SUCCEEDED")
-                    
+
                     n8n_notified = await notify_n8n(
                         event_type,
                         {
@@ -463,11 +488,11 @@ async def mock_webhook(
                             **event.get("metadata", {}),
                         },
                     )
-                    
+
                 elif event_type == "payment.failed" and payment:
                     await repo.update_status(payment_id, PaymentStatus.FAILED)
                     print(f"❌ Mock payment {payment_id} marked as FAILED")
-                    
+
                     n8n_notified = await notify_n8n(
                         event_type,
                         {
@@ -558,7 +583,7 @@ async def confirm_mock_payment(
             payment.id = payment_id
             payment = await repo.create(payment)
             print(f"   Created payment: {payment_id}")
-        
+
         # Mark payment as succeeded in database
         payment.mark_succeeded()
         await repo.update_status(payment.id, PaymentStatus.SUCCEEDED)
@@ -605,6 +630,7 @@ async def confirm_mock_payment(
     except Exception as e:
         print(f"❌ Error confirming mock payment: {e}")
         import traceback
+
         traceback.print_exc()
         return {"received": False, "error": str(e)}
 
@@ -612,6 +638,7 @@ async def confirm_mock_payment(
 # ============================================================================
 # Partner Webhook Endpoints
 # ============================================================================
+
 
 @router.post(
     "/partner",
@@ -664,6 +691,7 @@ async def partner_webhook(
 # ============================================================================
 # Testing Endpoints
 # ============================================================================
+
 
 @router.post(
     "/test/generate-signature",

@@ -4,14 +4,18 @@ from enum import Enum
 
 
 class PaymentStatus(str, Enum):
-    """Payment status enum."""
+    """Payment status enum.
 
-    PENDING = "pending"
-    PROCESSING = "processing"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    CANCELED = "canceled"
-    REFUNDED = "refunded"
+    Values must match PostgreSQL enum 'payments_payment_status_enum' created by TypeORM.
+    Uses uppercase values to match database.
+    """
+
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"  # Added for Payment MS
+    COMPLETED = "COMPLETED"  # Maps to succeeded
+    CANCELLED = "CANCELLED"  # Maps to canceled
+    FAILED = "FAILED"  # Added for Payment MS
+    REFUNDED = "REFUNDED"  # Added for Payment MS
 
 
 class PaymentType(str, Enum):
