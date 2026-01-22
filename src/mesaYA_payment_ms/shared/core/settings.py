@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
 
     # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/mesaya_db"
+    database_url: str = (
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/mesaya_db"
+    )
 
     # Payment Provider
     payment_provider: Literal["stripe", "mercadopago", "mock"] = "mock"
@@ -54,7 +56,6 @@ class Settings(BaseSettings):
     n8n_webhook_url: str = "http://localhost:5678/webhook"
 
     # Security
-    jwt_secret: str = "your_jwt_secret"
     hmac_secret_prefix: str = "whsec_"
 
     # CORS
