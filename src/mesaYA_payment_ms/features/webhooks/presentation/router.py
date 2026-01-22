@@ -3,12 +3,14 @@
 import json
 from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, Header, Request
 
 from mesaYA_payment_ms.features.payments.application.ports import PaymentProviderPort
 from mesaYA_payment_ms.features.payments.domain.enums import PaymentStatus
 from mesaYA_payment_ms.features.payments.infrastructure.provider_factory import get_payment_provider
 from mesaYA_payment_ms.features.payments.infrastructure.adapters.mock_adapter import MockPaymentAdapter
+from mesaYA_payment_ms.shared.core.settings import get_settings
 from mesaYA_payment_ms.shared.domain.exceptions import WebhookVerificationError
 from mesaYA_payment_ms.shared.presentation.api_response import APIResponse
 
@@ -18,6 +20,60 @@ router = APIRouter()
 def get_provider() -> PaymentProviderPort:
     """Dependency for getting the payment provider."""
     return get_payment_provider()
+
+
+async def notify_n8n(event_type: str, data: dict[str, Any]) -> bool:
+    """
+    Send webhook notification to n8n for orchestration.
+    
+    Args:
+        event_type: Type of event (e.g., payment.succeeded, payment.failed)
+        data: Event data payload
+    
+    Returns:
+        True if notification was sent successfully, False otherwise
+    """
+    settings = get_settings()
+    # Use /webhook-test/ for development (always active) or /webhook/ for production
+    webhook_url = f"{settings.n8n_webhook_url}-test/payment-webhook"
+    
+    payload = {
+        "event": event_type,
+        "payment_id": data.get("payment_id", ""),
+        "status": "approved" if data.get("status") == "succeeded" else data.get("status", ""),
+        "amount": data.get("amount", 0),
+        "currency": data.get("currency", "USD"),
+        "metadata": {
+            "reservation_id": data.get("reservation_id", ""),
+            "service_type": data.get("service_type", "reservation"),
+            "customer_email": data.get("customer_email", ""),
+            "customer_name": data.get("customer_name", ""),
+        },
+        "source": "mesaYA_payment_ms",
+        "provider": data.get("provider", "mock"),
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            
+            if response.status_code < 300:
+                print(f"📤 n8n webhook sent successfully: {event_type}")
+                return True
+            else:
+                print(f"⚠️ n8n webhook returned {response.status_code}: {response.text}")
+                return False
+                
+    except httpx.TimeoutException:
+        print(f"⏱️ n8n webhook timeout for {event_type}")
+        return False
+    except httpx.RequestError as e:
+        print(f"❌ n8n webhook error: {e}")
+        return False
 
 
 @router.post(
@@ -110,20 +166,88 @@ async def mock_webhook(
 
         print(f"📨 Mock webhook received: {event_type} for payment {payment_id}")
 
-        # Simulate event handling
+        # Handle event and notify n8n
+        n8n_notified = False
         if event_type == "payment.succeeded":
             print(f"✅ Mock payment {payment_id} succeeded")
+            # Notify n8n for orchestration
+            n8n_notified = await notify_n8n(event_type, {
+                "payment_id": payment_id,
+                "status": "succeeded",
+                "provider": "mock",
+                **event.get("metadata", {}),
+            })
         elif event_type == "payment.failed":
             print(f"❌ Mock payment {payment_id} failed")
+            n8n_notified = await notify_n8n(event_type, {
+                "payment_id": payment_id,
+                "status": "failed",
+                "provider": "mock",
+                **event.get("metadata", {}),
+            })
 
         return {
             "received": True,
             "event_type": event_type,
             "payment_id": payment_id,
+            "n8n_notified": n8n_notified,
         }
 
     except json.JSONDecodeError as e:
         raise WebhookVerificationError(f"Invalid JSON: {e}")
+
+
+@router.post(
+    "/mock/confirm",
+    summary="Confirm Mock Payment (Development)",
+    description="""
+    Simple endpoint for confirming mock payments without signature verification.
+    
+    **For development/testing only** - Do not use in production.
+    
+    This endpoint is called by the frontend mock checkout page when the user
+    clicks "Pay". It triggers the payment.succeeded event and notifies n8n.
+    """,
+    tags=["🧪 Testing"],
+)
+async def confirm_mock_payment(
+    request: Request,
+) -> dict[str, Any]:
+    """Confirm a mock payment and trigger webhooks."""
+    try:
+        body = await request.json()
+        payment_id = body.get("payment_id", "")
+        
+        if not payment_id:
+            return {"received": False, "error": "payment_id is required"}
+        
+        print(f"✅ Mock payment {payment_id} confirmed via frontend")
+        print(f"   Body: {body}")
+        
+        # Notify n8n about successful payment
+        n8n_notified = await notify_n8n("payment.succeeded", {
+            "payment_id": payment_id,
+            "status": "succeeded",
+            "provider": "mock",
+            "amount": body.get("amount", 0),
+            "currency": body.get("currency", "USD"),
+            "reservation_id": body.get("reservation_id", body.get("metadata", {}).get("reservation_id", "")),
+            "service_type": body.get("service_type", body.get("metadata", {}).get("service_type", "reservation")),
+            "customer_email": body.get("customer_email", body.get("metadata", {}).get("customer_email", "")),
+            "customer_name": body.get("customer_name", body.get("metadata", {}).get("customer_name", "")),
+            "confirmed_at": __import__("datetime").datetime.utcnow().isoformat(),
+        })
+        
+        return {
+            "received": True,
+            "event_type": "payment.succeeded",
+            "payment_id": payment_id,
+            "n8n_notified": n8n_notified,
+        }
+        
+    except Exception as e:
+        print(f"❌ Error confirming mock payment: {e}")
+        return {"received": False, "error": str(e)}
 
 
 @router.post(
