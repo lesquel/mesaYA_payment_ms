@@ -23,9 +23,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
 
     # Database
-    database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/mesaya_db"
-    )
+    database_url: str
 
     # Payment Provider
     payment_provider: Literal["stripe", "mercadopago", "mock"] = "mock"

@@ -34,7 +34,9 @@ class PaymentRepository:
         model = PaymentModel.from_domain(payment)
         self._session.add(model)
         await self._session.flush()
+        await self._session.commit()  # Force commit immediately so other services can see it
         await self._session.refresh(model)
+        print(f"💾 Payment {model.id} committed to database")
         return model.to_domain()
 
     async def get_by_id(self, payment_id: UUID) -> Optional[Payment]:

@@ -109,10 +109,12 @@ async def send_payment_webhook(payment: Payment, event_type: WebhookEventType) -
     - Supports idempotency via `Idempotency-Key` header
     - Returns a checkout URL for completing the payment
     - Payment starts in PENDING status until webhook confirmation
+    - Webhook is sent AFTER response to allow backend to sync first
     """,
 )
 async def create_payment(
     request: PaymentCreateRequest,
+    background_tasks: BackgroundTasks,
     provider: Annotated[PaymentProviderPort, Depends(get_provider)],
     repo: Annotated[PaymentRepository, Depends(get_payment_repository)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -157,13 +159,30 @@ async def create_payment(
     persisted_payment = await repo.create(result.payment)
     print(f"✅ Payment {persisted_payment.id} persisted to database")
 
-    # Send webhook notification for payment created (in background)
-    print(f"🔔 Triggering payment.created webhook for payment {persisted_payment.id}")
-    try:
-        await send_payment_webhook(persisted_payment, WebhookEventType.PAYMENT_CREATED)
-    except Exception as e:
-        # Don't fail the request if webhook fails
-        print(f"⚠️ Failed to send payment.created webhook: {e}")
+    # Schedule webhook notification to run AFTER response is sent
+    # This gives the backend time to save the payment locally before n8n processes it
+    print(
+        f"🔔 Scheduling payment.created webhook for payment {persisted_payment.id} (will run after response)"
+    )
+
+    async def delayed_webhook():
+        """Send webhook after a small delay to ensure backend has synced"""
+        import asyncio
+
+        await asyncio.sleep(
+            2.0
+        )  # 2 seconds delay to allow payment to be visible to other services
+        print(
+            f"🔔 Now sending payment.created webhook for payment {persisted_payment.id}"
+        )
+        try:
+            await send_payment_webhook(
+                persisted_payment, WebhookEventType.PAYMENT_CREATED
+            )
+        except Exception as e:
+            print(f"⚠️ Failed to send payment.created webhook: {e}")
+
+    background_tasks.add_task(delayed_webhook)
 
     return APIResponse.ok(
         data=PaymentIntentResponse(
